@@ -9,17 +9,29 @@ import GeminiLLM from './geminiLLM';
 
 interface GeminiConfig {
   apiKey: string;
+  baseURL?: string;
 }
+
+const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 const providerConfigFields: UIConfigField[] = [
   {
     type: 'password',
-    name: 'API Key',
+    name: 'API Key / OAuth Token',
     key: 'apiKey',
-    description: 'Your Gemini API key',
+    description: 'Gemini API key or OAuth access token (for antigravity)',
     required: true,
-    placeholder: 'Gemini API Key',
+    placeholder: 'Gemini API Key or OAuth Token',
     env: 'GEMINI_API_KEY',
+    scope: 'server',
+  },
+  {
+    type: 'string',
+    name: 'Base URL',
+    key: 'baseURL',
+    description: 'Custom API base URL (leave empty for default Gemini API)',
+    required: false,
+    placeholder: 'https://generativelanguage.googleapis.com/v1beta',
     scope: 'server',
   },
 ];
@@ -30,24 +42,36 @@ class GeminiProvider extends BaseModelProvider<GeminiConfig> {
   }
 
   async getDefaultModels(): Promise<ModelList> {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${this.config.apiKey}`,
-      {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      },
-    );
+    const base = this.config.baseURL || DEFAULT_BASE_URL;
+    const isBearer = !this.config.apiKey.startsWith('AIza');
+    const url = isBearer
+      ? `${base}/models`
+      : `${base}/models?key=${this.config.apiKey}`;
 
-    const data = await res.json();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (isBearer) {
+      headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    }
+
+    let data: any = {};
+    try {
+      const res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        data = await res.json();
+      }
+    } catch {
+      // Model listing unavailable (e.g. antigravity proxy) — fall through to config models
+    }
 
     let defaultEmbeddingModels: Model[] = [];
     let defaultChatModels: Model[] = [];
 
-    data.models.forEach((m: any) => {
+    const models = data.models || [];
+    models.forEach((m: any) => {
       if (
-        m.supportedGenerationMethods.some(
+        m.supportedGenerationMethods?.some(
           (genMethod: string) =>
             genMethod === 'embedText' || genMethod === 'embedContent',
         )
@@ -56,7 +80,7 @@ class GeminiProvider extends BaseModelProvider<GeminiConfig> {
           key: m.name,
           name: m.displayName,
         });
-      } else if (m.supportedGenerationMethods.includes('generateContent')) {
+      } else if (m.supportedGenerationMethods?.includes('generateContent')) {
         defaultChatModels.push({
           key: m.name,
           name: m.displayName,
@@ -94,10 +118,11 @@ class GeminiProvider extends BaseModelProvider<GeminiConfig> {
       );
     }
 
+    const base = this.config.baseURL || DEFAULT_BASE_URL;
     return new GeminiLLM({
       apiKey: this.config.apiKey,
       model: key,
-      baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      baseURL: `${base}/openai`,
     });
   }
 
@@ -111,10 +136,11 @@ class GeminiProvider extends BaseModelProvider<GeminiConfig> {
       );
     }
 
+    const base = this.config.baseURL || DEFAULT_BASE_URL;
     return new GeminiEmbedding({
       apiKey: this.config.apiKey,
       model: key,
-      baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      baseURL: `${base}/openai`,
     });
   }
 
@@ -124,9 +150,13 @@ class GeminiProvider extends BaseModelProvider<GeminiConfig> {
     if (!raw.apiKey)
       throw new Error('Invalid config provided. API key must be provided');
 
-    return {
+    const config: GeminiConfig = {
       apiKey: String(raw.apiKey),
     };
+    if (raw.baseURL) {
+      config.baseURL = String(raw.baseURL).replace(/\/+$/, '');
+    }
+    return config;
   }
 
   static getProviderConfigFields(): UIConfigField[] {

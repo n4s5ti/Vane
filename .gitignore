@@ -39,3 +39,6 @@ db.sqlite
 /searxng
 
 certificates
+
+# Generated config with injected secrets (use config.template.json instead)
+data/config.json

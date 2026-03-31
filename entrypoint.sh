@@ -27,6 +27,18 @@ else
 fi
 
 cd /home/vane
+
+# --- Self-loading secret injection (1Password Connect API) ---
+# Fetches secrets directly from Connect API inside the container.
+# Falls back to env vars if Connect is unavailable.
+if [ -f data/config.template.json ]; then
+  echo "Injecting secrets into config.json..."
+  python3 inject-secrets.py
+else
+  echo "No config.template.json found, using existing config.json."
+fi
+# --- End secret injection ---
+
 echo "Starting Vane..."
 
 exec node server.js

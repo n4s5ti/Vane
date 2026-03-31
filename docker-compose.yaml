@@ -1,4 +1,20 @@
 services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    networks:
+      - vane-stack
+    volumes:
+      - searxng-data:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
   vane:
     image: itzcrazykns1337/vane:latest
     build:
@@ -10,12 +26,18 @@ services:
         aliases:
           - vane
     volumes:
-      - data:/home/vane/data
-    extra_hosts:
-      - "host.containers.internal:host-gateway"
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+      - ./data:/home/vane/data
+    secrets:
+      - op-connect-token
+    environment:
+      - SEARXNG_API_URL=http://searxng:8080
+      # 1Password Connect: container self-loads secrets from Connect API.
+      # Token mounted via podman secret at /run/secrets/op-connect-token.
+      - OP_CONNECT_HOST=http://host.containers.internal:8080
+      - OP_VAULT_NAME=shared.dev
+    depends_on:
+      searxng:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
@@ -55,6 +77,21 @@ services:
       - PERPLEXICA_CHAT_MODEL_NAME=gpt-4o-mini
       - PERPLEXICA_EMBEDDING_MODEL_NAME=text-embedding-3-small
       - PERPLEXICA_READ_TIMEOUT=60
+      # Pass-through API keys so atl5s-mcp tools work in-container.
+      - OPENAI_API_KEY
+      - CLAUDE_CODE_OAUTH_TOKEN
+      - GITHUB_TOKEN
+      - PERPLEXITY_API_KEY
+      - GROQ_API_KEY
+      - GEMINI_API_KEY
+      - GOOGLE_API_KEY
+      - XAI_API_KEY
+      - OPENROUTER_API_KEY
+      - FIRECRAWL_API_KEY
+      - TAILSCALE_API_KEY
+      - HETZNER_API_TOKEN
+      - GRAFANA_API_KEY
+      - AUTOMEM_API_KEY
     depends_on:
       vane:
         condition: service_healthy
@@ -62,9 +99,13 @@ services:
     restart: unless-stopped
 
 volumes:
-  data:
-    name: 'vane-data'
+  searxng-data:
+    name: 'vane-searxng-data'
 
 networks:
   vane-stack:
     name: 'vane-stack'
+
+secrets:
+  op-connect-token:
+    external: true

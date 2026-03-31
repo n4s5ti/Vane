@@ -140,7 +140,7 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
       });
     });
 
-    const stream = await this.openAIClient.chat.completions.create({
+    const requestParams = {
       model: this.config.model,
       messages: this.convertToOpenAIMessages(input.messages),
       tools: openaiTools.length > 0 ? openaiTools : undefined,
@@ -155,39 +155,87 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
         this.config.options?.frequencyPenalty,
       presence_penalty:
         input.options?.presencePenalty ?? this.config.options?.presencePenalty,
-      stream: true,
-    });
+    };
 
-    let recievedToolCalls: { name: string; id: string; arguments: string }[] =
-      [];
+    try {
+      // Try streaming first
+      const stream = await this.openAIClient.chat.completions.create({
+        ...requestParams,
+        stream: true,
+      });
 
-    for await (const chunk of stream) {
-      if (chunk.choices && chunk.choices.length > 0) {
-        const toolCalls = chunk.choices[0].delta.tool_calls;
+      let recievedToolCalls: { name: string; id: string; arguments: string }[] =
+        [];
+
+      for await (const chunk of stream) {
+        if (chunk.choices && chunk.choices.length > 0) {
+          const toolCalls = chunk.choices[0].delta.tool_calls;
+          yield {
+            contentChunk: chunk.choices[0].delta.content || '',
+            toolCallChunk:
+              toolCalls?.map((tc: any) => {
+                if (!recievedToolCalls[tc.index]) {
+                  const call = {
+                    name: tc.function?.name!,
+                    id: tc.id!,
+                    arguments: tc.function?.arguments || '',
+                  };
+                  recievedToolCalls.push(call);
+                  return { ...call, arguments: parse(call.arguments || '{}') };
+                } else {
+                  const existingCall = recievedToolCalls[tc.index];
+                  existingCall.arguments += tc.function?.arguments || '';
+                  return {
+                    ...existingCall,
+                    arguments: parse(existingCall.arguments),
+                  };
+                }
+              }) || [],
+            done: chunk.choices[0].finish_reason !== null,
+            additionalInfo: {
+              finishReason: chunk.choices[0].finish_reason,
+            },
+          };
+        }
+      }
+    } catch (streamError: any) {
+      // Streaming failed (e.g. OpenRouter SSE comment parsing) — fall back to non-streaming
+      console.warn(`[OpenAILLM] Stream failed (${streamError.message}), falling back to non-streaming`);
+      const response = await this.openAIClient.chat.completions.create({
+        ...requestParams,
+        stream: false,
+      });
+
+      const choice = response.choices?.[0];
+      if (!choice) return;
+
+      // Emit tool calls individually (matching streaming format where each chunk has one tool call)
+      const toolCalls = choice.message?.tool_calls || [];
+      for (let i = 0; i < toolCalls.length; i++) {
+        const tc = toolCalls[i] as any;
         yield {
-          contentChunk: chunk.choices[0].delta.content || '',
-          toolCallChunk:
-            toolCalls?.map((tc) => {
-              if (!recievedToolCalls[tc.index]) {
-                const call = {
-                  name: tc.function?.name!,
-                  id: tc.id!,
-                  arguments: tc.function?.arguments || '',
-                };
-                recievedToolCalls.push(call);
-                return { ...call, arguments: parse(call.arguments || '{}') };
-              } else {
-                const existingCall = recievedToolCalls[tc.index];
-                existingCall.arguments += tc.function?.arguments || '';
-                return {
-                  ...existingCall,
-                  arguments: parse(existingCall.arguments),
-                };
-              }
-            }) || [],
-          done: chunk.choices[0].finish_reason !== null,
+          contentChunk: i === 0 ? (choice.message?.content || '') : '',
+          toolCallChunk: [{
+            name: tc.function?.name || '',
+            id: tc.id || '',
+            arguments: tc.function?.arguments
+              ? parse(tc.function.arguments)
+              : {},
+          }],
+          done: i === toolCalls.length - 1,
           additionalInfo: {
-            finishReason: chunk.choices[0].finish_reason,
+            finishReason: i === toolCalls.length - 1 ? choice.finish_reason : null,
+          },
+        };
+      }
+      // If no tool calls, emit just the content
+      if (toolCalls.length === 0) {
+        yield {
+          contentChunk: choice.message?.content || '',
+          toolCallChunk: [],
+          done: true,
+          additionalInfo: {
+            finishReason: choice.finish_reason,
           },
         };
       }

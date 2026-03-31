@@ -61,7 +61,7 @@ RUN cd "/usr/local/searxng/searxng-src" && \
 USER root
 
 WORKDIR /home/vane
-COPY entrypoint.sh ./entrypoint.sh
+COPY entrypoint.sh inject-secrets.py ./
 RUN chmod +x ./entrypoint.sh
 RUN sed -i 's/\r$//' ./entrypoint.sh || true
 
